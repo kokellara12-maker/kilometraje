@@ -45,8 +45,8 @@ td.n,th.n{text-align:right;white-space:nowrap}
   <h2>Nuevo desplazamiento</h2>
   <div class="row">
     <div><label>Fecha</label><input type="date" id="fecha"></div>
-    <div><label>Desde</label><input id="desde" list="lugares" placeholder="casa"></div>
-    <div><label>Hasta</label><input id="hasta" list="lugares" placeholder="Judeca"></div>
+    <div><label>Desde</label><input id="desde" list="lugares" placeholder="casa"><a href="#" class="sub" onclick="openGM('desde');return false">Buscar en Google Maps ↗</a></div>
+    <div><label>Hasta</label><input id="hasta" list="lugares" placeholder="Judeca"><a href="#" class="sub" onclick="openGM('hasta');return false">Buscar en Google Maps ↗</a></div>
     <div class="chk"><input type="checkbox" id="ida" checked><label style="margin:0">Ida y vuelta</label></div>
   </div>
   <datalist id="lugares"></datalist>
@@ -55,7 +55,9 @@ td.n,th.n{text-align:right;white-space:nowrap}
     <span style="flex:1"></span>
     <div style="width:130px"><label>€ por km</label><input type="number" step="0.01" id="tarifa" value="0.26"></div>
   </div>
+  <div class="sub" style="margin-top:8px">Truco: pulsa “Buscar en Google Maps”, elige el sitio, mantén pulsado el punto, copia los números (coordenadas) y pégalos en el cuadro.</div>
   <div id="msg" class="msg"></div>
+  <div id="pick"></div>
   <div id="res"></div>
 </div>
 
@@ -97,16 +99,47 @@ $('tarifa').onchange=()=>save('km_rate',parseFloat($('tarifa').value)||0);
 function msg(t,err){$('msg').textContent=t;$('msg').className='msg'+(err?' err':'')}
 
 async function geocode(q){
-  const r=await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=es&q='+encodeURIComponent(q));
+  const r=await fetch('https://nominatim.openstreetmap.org/search?format=jsonv2&limit=6&countrycodes=es&viewbox=-5.7,37.3,-3.8,36.3&q='+encodeURIComponent(q));
   if(!r.ok) throw new Error('No pude buscar la dirección');
   return (await r.json()).map(x=>({label:x.display_name,lat:+x.lat,lon:+x.lon}));
 }
+const gm=x=>'https://www.google.com/maps/search/?api=1&query='+x.lat+','+x.lon;
+function pick(name,c){
+  return new Promise((ok,no)=>{
+    const box=$('pick');box.innerHTML='<div class="res"><b>¿Cuál es “'+name+'”?</b><div class="sub">Pulsa el correcto. “Ver en Google Maps” te lo enseña en el mapa para comprobarlo.</div></div>';
+    c.forEach(x=>{
+      const w=document.createElement('div');
+      const b=document.createElement('button');b.className='cand';b.textContent=x.label;
+      b.onclick=()=>{box.innerHTML='';ok({name,...x})};
+      const a=document.createElement('a');a.href=gm(x);a.target='_blank';a.rel='noopener';a.className='sub';a.textContent='Ver en Google Maps ↗';
+      w.append(b,a);box.appendChild(w);
+    });
+    const n=document.createElement('button');n.className='cand';n.textContent='Ninguno es el mío';
+    n.onclick=()=>{box.innerHTML='';no(new Error('Escribe la dirección con más detalle (calle, número, pueblo).'))};
+    box.appendChild(n);
+    box.scrollIntoView({behavior:'smooth',block:'center'});
+  });
+}
+function parseCoord(s){
+  s=s.trim();
+  if(/(goo\.gl|maps\.app)/i.test(s)) throw new Error('Ese enlace corto de Google no lo puedo leer. En Google Maps mantén pulsado el punto y copia los números de arriba (coordenadas), o copia el enlace largo.');
+  let m=s.match(/^(-?\d+[.,]\d+)\s*[,;\s]\s*(-?\d+[.,]\d+)$/)||s.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/)||s.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/);
+  if(!m) return null;
+  return {lat:parseFloat(m[1].replace(',','.')),lon:parseFloat(m[2].replace(',','.'))};
+}
+const nice=s=>{try{return parseCoord(s)?'Punto del mapa':s}catch(e){return s}};
+function openGM(id){const v=$(id).value.trim();window.open('https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(v||'Málaga'),'_blank')}
 async function resolve(name){
   const p=places.find(p=>p.name.toLowerCase()===name.trim().toLowerCase());
   if(p) return p;
+  const m=parseCoord(name);
+  if(m) return {name:'Punto del mapa',label:'Punto del mapa ('+m.lat.toFixed(5)+', '+m.lon.toFixed(5)+')',lat:m.lat,lon:m.lon};
   const c=await geocode(name);
-  if(!c.length) throw new Error('No encuentro “'+name+'”. Guárdalo en “Mis lugares” con más detalle.');
-  return {name,label:c[0].label,lat:c[0].lat,lon:c[0].lon};
+  if(!c.length) throw new Error('No encuentro “'+name+'”. Prueba con calle y pueblo, p. ej. “Calle Bandera, Rincón de la Victoria”.');
+  msg('Elige el sitio correcto de “'+name+'”');
+  const s=await pick(name,c);
+  places.push(s);save('km_places',places);render();
+  return s;
 }
 async function route(a,b){
   const u=`https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
@@ -123,7 +156,7 @@ $('calc').onclick=async()=>{
     const a=await resolve(d); await new Promise(r=>setTimeout(r,1100)); const b=await resolve(h);
     const one=await route(a,b), round=$('ida').checked;
     const km=Math.round(one*(round?2:1)*10)/10, amount=km*rate;
-    trips.push({id:Date.now(),date:f,from:d,to:h,fromL:a.label,toL:b.label,one:Math.round(one*10)/10,round,km,rate,amount});
+    trips.push({id:Date.now(),date:f,from:nice(d),to:nice(h),fromL:a.label,toL:b.label,one:Math.round(one*10)/10,round,km,rate,amount});
     save('km_trips',trips); render(); msg('Guardado.');
     $('res').innerHTML=`<div class="res"><b>${fmt(km,1)} km</b> × ${fmt(rate)} € = <b>${fmt(amount)} €</b><div class="sub">${a.label}<br>→ ${b.label}</div></div>`;
   }catch(e){msg(e.message,1)}
@@ -135,11 +168,14 @@ $('pb').onclick=async()=>{
   if(!n||!q) return;
   $('cands').innerHTML='Buscando…';
   try{
+    const pc=parseCoord(q);
+    if(pc){places=places.filter(p=>p.name.toLowerCase()!==n.toLowerCase());places.push({name:n,label:'Punto del mapa ('+pc.lat.toFixed(5)+', '+pc.lon.toFixed(5)+')',lat:pc.lat,lon:pc.lon});save('km_places',places);$('cands').innerHTML='';$('pn').value=$('pd').value='';render();return}
     const c=await geocode(q);
     $('cands').innerHTML=c.length?'':'Sin resultados.';
-    c.forEach(x=>{const b=document.createElement('button');b.className='cand';b.textContent=x.label;
+    c.forEach(x=>{const w=document.createElement('div');const b=document.createElement('button');b.className='cand';b.textContent=x.label;
       b.onclick=()=>{places=places.filter(p=>p.name.toLowerCase()!==n.toLowerCase());places.push({name:n,...x});save('km_places',places);$('cands').innerHTML='';$('pn').value=$('pd').value='';render()};
-      $('cands').appendChild(b)});
+      const a=document.createElement('a');a.href=gm(x);a.target='_blank';a.rel='noopener';a.className='sub';a.textContent='Ver en Google Maps ↗';
+      w.append(b,a);$('cands').appendChild(w)});
   }catch(e){$('cands').textContent=e.message}
 };
 
